@@ -1,0 +1,5 @@
+# Privata nycklar och hemligheter
+*.pem
+*.key
+.aws/
+.env
