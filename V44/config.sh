@@ -18,17 +18,17 @@ VPC_CIDR=10.0.0.0/16
 AZ_A=${REGION}a
 AZ_B=${REGION}b
 
-MGMT_SUBNET=novatrix-mgmt-a;   MGMT_CIDR=10.0.0.0/24    # bastion (publikt)
-WEB_SUBNET_A=novatrix-web-a;   WEB_CIDR_A=10.0.1.0/24   # webbserver (publikt)
-DB_SUBNET_A=novatrix-db-a;     DB_CIDR_A=10.0.11.0/24   # databas (privat)
-DB_SUBNET_B=novatrix-db-b;     DB_CIDR_B=10.0.12.0/24   # databas (privat, andra AZ)
+MGMT_SUBNET=novatrix-mgmt;        MGMT_CIDR=10.0.0.0/24    # bastion (publikt)
+WEB_SUBNET_A=novatrix-public;     WEB_CIDR_A=10.0.1.0/24   # webbserver (publikt)
+DB_SUBNET_A=novatrix-private-a;   DB_CIDR_A=10.0.11.0/24   # databas (privat)
+DB_SUBNET_B=novatrix-private-b;   DB_CIDR_B=10.0.12.0/24   # databas (privat, andra AZ)
 
 IGW_NAME=novatrix-igw
 PUBLIC_RT=novatrix-public-rt
 PRIVATE_RT=novatrix-private-rt
 MGMT_NACL=novatrix-mgmt-nacl
-WEB_NACL=novatrix-web-nacl
-DB_NACL=novatrix-db-nacl
+WEB_NACL=novatrix-public-nacl
+DB_NACL=novatrix-private-nacl
 BASTION_SG=novatrix-bastion-sg
 WEB_SG=novatrix-web-sg
 DB_SG=novatrix-db-sg

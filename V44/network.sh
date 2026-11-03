@@ -1,6 +1,7 @@
 #!/bin/bash
 # V44: Bygger Novatrix nätverk som kod.
 # VPC, internet gateway, fyra subnät i två AZ, route tables, NACL:er och security groups.
+# Namnen följer kursens standard (novatrix-public, novatrix-private-a/-b, novatrix-public-nacl).
 # Körs av en administratör (albin-admin).
 set -euo pipefail
 export MSYS_NO_PATHCONV=1
@@ -24,13 +25,13 @@ VPC_ID=$($EC2 create-vpc --cidr-block "$VPC_CIDR" \
   --tag-specifications "$(tags vpc "$VPC_NAME")" --query Vpc.VpcId --output text)
 $EC2 wait vpc-available --vpc-ids "$VPC_ID"
 $EC2 modify-vpc-attribute --vpc-id "$VPC_ID" --enable-dns-hostnames Value=true
-echo "Skapade VPC $VPC_ID ($VPC_CIDR)"
+echo "Skapade VPC $VPC_NAME $VPC_ID ($VPC_CIDR)"
 
 IGW_ID=$($EC2 create-internet-gateway \
   --tag-specifications "$(tags internet-gateway "$IGW_NAME")" \
   --query InternetGateway.InternetGatewayId --output text)
 $EC2 attach-internet-gateway --internet-gateway-id "$IGW_ID" --vpc-id "$VPC_ID"
-echo "Skapade internet gateway $IGW_ID och kopplade den till VPC:t"
+echo "Skapade internet gateway $IGW_NAME $IGW_ID och kopplade den till VPC:t"
 
 # ------------------------------------------------------------------
 echo ""
@@ -42,10 +43,10 @@ create_subnet() {  # <namn> <cidr> <az>
   echo "Skapade subnät $1 ($2, $3)" >&2
   echo "$id"
 }
-MGMT_ID=$(create_subnet  "$MGMT_SUBNET"  "$MGMT_CIDR"  "$AZ_A")
-WEB_A_ID=$(create_subnet "$WEB_SUBNET_A" "$WEB_CIDR_A" "$AZ_A")
-DB_A_ID=$(create_subnet  "$DB_SUBNET_A"  "$DB_CIDR_A"  "$AZ_A")
-DB_B_ID=$(create_subnet  "$DB_SUBNET_B"  "$DB_CIDR_B"  "$AZ_B")
+MGMT_ID=$(create_subnet  "$MGMT_SUBNET"  "$MGMT_CIDR"  "$AZ_A")   # bastion
+WEB_A_ID=$(create_subnet "$WEB_SUBNET_A" "$WEB_CIDR_A" "$AZ_A")   # webbserver
+DB_A_ID=$(create_subnet  "$DB_SUBNET_A"  "$DB_CIDR_A"  "$AZ_A")   # databas (privat)
+DB_B_ID=$(create_subnet  "$DB_SUBNET_B"  "$DB_CIDR_B"  "$AZ_B")   # databas (privat, andra AZ)
 
 # ------------------------------------------------------------------
 echo ""
@@ -58,7 +59,7 @@ $EC2 create-route --route-table-id "$PUBLIC_RT_ID" \
 for subnet in "$MGMT_ID" "$WEB_A_ID"; do
   $EC2 associate-route-table --route-table-id "$PUBLIC_RT_ID" --subnet-id "$subnet" > /dev/null
 done
-echo "Publik route table $PUBLIC_RT_ID: 0.0.0.0/0 -> internet gateway (mgmt-a, web-a)"
+echo "Publik route table $PUBLIC_RT $PUBLIC_RT_ID: 0.0.0.0/0 -> internet gateway ($MGMT_SUBNET, $WEB_SUBNET_A)"
 
 PRIVATE_RT_ID=$($EC2 create-route-table --vpc-id "$VPC_ID" \
   --tag-specifications "$(tags route-table "$PRIVATE_RT")" \
@@ -66,7 +67,7 @@ PRIVATE_RT_ID=$($EC2 create-route-table --vpc-id "$VPC_ID" \
 for subnet in "$DB_A_ID" "$DB_B_ID"; do
   $EC2 associate-route-table --route-table-id "$PRIVATE_RT_ID" --subnet-id "$subnet" > /dev/null
 done
-echo "Privat route table $PRIVATE_RT_ID: endast lokal trafik inom VPC:t (db-a, db-b)"
+echo "Privat route table $PRIVATE_RT $PRIVATE_RT_ID: endast lokal trafik inom VPC:t ($DB_SUBNET_A, $DB_SUBNET_B)"
 
 # ------------------------------------------------------------------
 echo ""
@@ -93,16 +94,16 @@ attach_nacl() {  # <acl> <subnät>
   $EC2 replace-network-acl-association --association-id "$assoc" --network-acl-id "$1" > /dev/null
 }
 
-# Management-subnätet (bastion): SSH in endast från admin-IP, SSH ut endast till webbsubnätet
+# novatrix-mgmt-nacl (bastion): SSH in endast från admin-IP, SSH ut endast till novatrix-public
 MGMT_NACL_ID=$(create_nacl "$MGMT_NACL")
 nacl_rule "$MGMT_NACL_ID" in  100 "$MY_IP"      22   22      # SSH från admin
 nacl_rule "$MGMT_NACL_ID" in  110 "$WEB_CIDR_A" 1024 65535   # svar från webbservern
 nacl_rule "$MGMT_NACL_ID" out 100 "$MY_IP"      1024 65535   # svar till admin
 nacl_rule "$MGMT_NACL_ID" out 110 "$WEB_CIDR_A" 22   22      # SSH till webbservern
 attach_nacl "$MGMT_NACL_ID" "$MGMT_ID"
-echo "NACL $MGMT_NACL: SSH från din IP in, SSH till webbsubnätet ut, allt annat nekas"
+echo "NACL $MGMT_NACL: SSH från din IP in, SSH till $WEB_SUBNET_A ut, allt annat nekas"
 
-# Webbsubnätet: HTTP/HTTPS från alla, SSH endast från management-subnätet
+# novatrix-public-nacl (webbserver): HTTP/HTTPS från alla, SSH endast från novatrix-mgmt
 WEB_NACL_ID=$(create_nacl "$WEB_NACL")
 nacl_rule "$WEB_NACL_ID" in  100 0.0.0.0/0    80   80        # HTTP
 nacl_rule "$WEB_NACL_ID" in  110 0.0.0.0/0    443  443       # HTTPS
@@ -113,15 +114,15 @@ nacl_rule "$WEB_NACL_ID" out 110 0.0.0.0/0    443  443       # HTTPS ut (S3, pak
 nacl_rule "$WEB_NACL_ID" out 120 "$DB_CIDR_A" 3306 3306      # MySQL till databasen (v45)
 nacl_rule "$WEB_NACL_ID" out 130 "$DB_CIDR_B" 3306 3306
 attach_nacl "$WEB_NACL_ID" "$WEB_A_ID"
-echo "NACL $WEB_NACL: HTTP/HTTPS från alla, SSH från bastion-subnätet, allt annat nekas"
+echo "NACL $WEB_NACL: HTTP/HTTPS från alla, SSH från $MGMT_SUBNET, allt annat nekas"
 
-# Databassubnäten: MySQL endast från webbsubnätet
+# novatrix-private-nacl (databas): MySQL endast från novatrix-public
 DB_NACL_ID=$(create_nacl "$DB_NACL")
 nacl_rule "$DB_NACL_ID" in  100 "$WEB_CIDR_A" 3306 3306      # MySQL från webbsubnätet
 nacl_rule "$DB_NACL_ID" out 100 "$WEB_CIDR_A" 1024 65535     # svar till webbsubnätet
 attach_nacl "$DB_NACL_ID" "$DB_A_ID"
 attach_nacl "$DB_NACL_ID" "$DB_B_ID"
-echo "NACL $DB_NACL: MySQL från webbsubnätet, allt annat nekas"
+echo "NACL $DB_NACL: MySQL från $WEB_SUBNET_A, allt annat nekas"
 
 # ------------------------------------------------------------------
 echo ""
@@ -154,17 +155,17 @@ DB_SG_ID=$(create_sg "$DB_SG" "Databas: MySQL fran webbservern")
 
 sg_rule ingress "$BASTION_SG_ID" 22   "$MY_IP"         "SSH fran admin-IP"
 sg_rule egress  "$BASTION_SG_ID" 22   "$WEB_SG_ID"     "SSH till webbservern"
-echo "$BASTION_SG: in SSH från din IP, ut SSH endast till webbservern"
+echo "$BASTION_SG: in SSH från din IP, ut SSH endast till $WEB_SG"
 
 sg_rule ingress "$WEB_SG_ID"     80   0.0.0.0/0        "HTTP fran alla"
 sg_rule ingress "$WEB_SG_ID"     443  0.0.0.0/0        "HTTPS fran alla"
 sg_rule ingress "$WEB_SG_ID"     22   "$BASTION_SG_ID" "SSH endast fran bastion"
 sg_rule egress  "$WEB_SG_ID"     443  0.0.0.0/0        "HTTPS till S3 och paketforrad"
 sg_rule egress  "$WEB_SG_ID"     3306 "$DB_SG_ID"      "MySQL till databasen"
-echo "$WEB_SG: in HTTP/HTTPS från alla och SSH från bastion, ut HTTPS och MySQL"
+echo "$WEB_SG: in HTTP/HTTPS från alla och SSH från $BASTION_SG, ut HTTPS och MySQL till $DB_SG"
 
 sg_rule ingress "$DB_SG_ID"      3306 "$WEB_SG_ID"     "MySQL endast fran webbservern"
-echo "$DB_SG: in MySQL endast från webbservern, ingen utgående trafik"
+echo "$DB_SG: in MySQL endast från $WEB_SG, ingen utgående trafik"
 
 echo ""
 echo "Klart! Nätverket $VPC_NAME är byggt. Kör ./provision.sh för att starta servrarna."
