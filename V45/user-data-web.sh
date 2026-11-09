@@ -34,7 +34,13 @@ cp "$RDS_CA" /etc/pki/ca-trust/source/anchors/rds-global-bundle.pem
 update-ca-trust
 
 # ---- 3. WP-CLI och WordPress på svenska ----
-curl -fsSL -o /usr/local/bin/wp https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+# WP-CLI körs via ett litet skript som ger PHP 512 MB minne, eftersom standardgränsen
+# på 128 MB inte räcker för att packa upp WordPress.
+curl -fsSL -o /usr/local/lib/wp-cli.phar https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+cat > /usr/local/bin/wp <<'WPCLI'
+#!/bin/bash
+exec php -d memory_limit=512M /usr/local/lib/wp-cli.phar "$@"
+WPCLI
 chmod +x /usr/local/bin/wp
 WP="/usr/local/bin/wp --allow-root --path=$WEBROOT"
 $WP core download --locale=sv_SE
