@@ -54,10 +54,9 @@ for i in $(seq 1 12); do
   echo "EFS-montering, försök $i misslyckades, väntar 10 sekunder ..."
   sleep 10
 done
-# Den första servern som monterar EFS fyller den med WordPress standardinnehåll
-if [ -z "$(ls -A "$WEBROOT/wp-content")" ]; then
-  cp -a /tmp/wp-content-original/. "$WEBROOT/wp-content/"
-fi
+# Fyll EFS med WordPress standardinnehåll (teman, tillägg). -n skriver aldrig över
+# befintliga filer, så uppladdningar och ändringar från andra servrar bevaras.
+cp -an /tmp/wp-content-original/. "$WEBROOT/wp-content/"
 mkdir -p "$WEBROOT/wp-content/uploads"
 
 # ---- 5. wp-config.php med WordPress-användarens lösenord från SSM ----
