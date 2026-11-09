@@ -59,8 +59,8 @@ HTTP_OUT='curl -s -m 5 -o /dev/null http://aws.amazon.com && echo ok || echo fai
 echo "== Från internet till webbservern =="
 expect "HTTP 80 till webbservern"                 öppen     "$(probe "$WEB_IP" 80)"
 expect "HTTPS 443 till webbservern"               öppen     "$(probe "$WEB_IP" 443)"
-expect "Novatrix-sidan över HTTP"                 öppen     "$(curl -s -m 10 "http://$WEB_IP" | grep -q Novatrix && echo öppen || echo blockerad)"
-expect "Novatrix-sidan över HTTPS"                öppen     "$(curl -sk -m 10 "https://$WEB_IP" | grep -q Novatrix && echo öppen || echo blockerad)"
+expect "Novatrix-sidan över HTTP"                 öppen     "$(curl -s -m 10 "http://$WEB_IP" | grep Novatrix > /dev/null && echo öppen || echo blockerad)"
+expect "Novatrix-sidan över HTTPS"                öppen     "$(curl -sk -m 10 "https://$WEB_IP" | grep Novatrix > /dev/null && echo öppen || echo blockerad)"
 expect "SSH 22 direkt till webbservern"           blockerad "$(probe "$WEB_IP" 22)"
 expect "MySQL 3306 till webbservern"              blockerad "$(probe "$WEB_IP" 3306)"
 
