@@ -1,0 +1,29 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "TillatMonteringEndastViaMountTarget",
+      "Effect": "Allow",
+      "Principal": { "AWS": "*" },
+      "Action": [
+        "elasticfilesystem:ClientMount",
+        "elasticfilesystem:ClientWrite",
+        "elasticfilesystem:ClientRootAccess"
+      ],
+      "Resource": "__EFS_ARN__",
+      "Condition": {
+        "Bool": { "elasticfilesystem:AccessedViaMountTarget": "true" }
+      }
+    },
+    {
+      "Sid": "KravKrypteradTrafik",
+      "Effect": "Deny",
+      "Principal": { "AWS": "*" },
+      "Action": "*",
+      "Resource": "__EFS_ARN__",
+      "Condition": {
+        "Bool": { "aws:SecureTransport": "false" }
+      }
+    }
+  ]
+}

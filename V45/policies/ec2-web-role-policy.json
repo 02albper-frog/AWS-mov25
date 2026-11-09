@@ -1,0 +1,38 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "LasWebbsidan",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::__BUCKET__/web/*"
+    },
+    {
+      "Sid": "SkrivLoggar",
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::__BUCKET__/logs/*"
+    },
+    {
+      "Sid": "SkrivDatabasbackuper",
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::__BACKUP_BUCKET__/db/*"
+    },
+    {
+      "Sid": "LasEndastWordPressLosenordet",
+      "Effect": "Allow",
+      "Action": "ssm:GetParameter",
+      "Resource": "arn:aws:ssm:__REGION__:__ACCOUNT_ID__:parameter/novatrix/db/wp-password"
+    },
+    {
+      "Sid": "DekrypteraEndastViaSSM",
+      "Effect": "Allow",
+      "Action": "kms:Decrypt",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": { "kms:ViaService": "ssm.__REGION__.amazonaws.com" }
+      }
+    }
+  ]
+}
