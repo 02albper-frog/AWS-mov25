@@ -118,9 +118,9 @@ Webbserverns roll utökades med två behörigheter: den får **lägga till** bac
 Rollen kan alltså varken läsa eller radera backuper, och den kan inte läsa databasens
 huvudlösenord. Alla 31 IAM-tester gav förväntat resultat.
 
-![alt text](01-setup-iam.png)
+![alt text](bilder/01-setup-iam.png)
 
-![alt text](02-verify-iam.png)
+![alt text](bilder/02-verify-iam.png)
 
 ### Nätverket
 
@@ -130,7 +130,7 @@ Nätverket från v44 byggdes upp igen, med en ny security group för EFS och reg
 ```bash
 ./network.sh
 ```
-![alt text](03-network.png)
+![alt text](bilder/03-network.png)
 
 ## Delmoment 2 – Databas
 
@@ -162,7 +162,7 @@ aws rds create-db-instance \
 ./storage.sh
 ```
 
-![alt text](08-storage.png)
+![alt text](bilder/08-storage.png)
 
 ### Val av databasnivå
 
@@ -179,11 +179,11 @@ Med Multi-AZ hamnade den primära databasen i eu-north-1b och standby i eu-north
 Webbservern i eu-north-1a når båda, eftersom nätverket släpper igenom MySQL till båda de
 privata subnäten. Om databasen byter zon vid en failover behöver alltså ingenting ändras.
 
-![alt text](09-rds-oversikt.png)
+![alt text](bilder/09-rds-oversikt.png)
 
-![alt text](11-rds-konfiguration.png)
+![alt text](bilder/11-rds-konfiguration.png)
 
-![alt text](12-db-subnet-group.png)
+![alt text](bilder/12-db-subnet-group.png)
 
 ## Delmoment 3 – Delad lagring
 
@@ -228,11 +228,11 @@ Webbservern monterar därför EFS med TLS:
 echo "$EFS_ID:/ /var/www/html/wp-content efs _netdev,tls 0 0" >> /etc/fstab
 ```
 
-![alt text](13-efs-1.png)
+![alt text](bilder/13-efs-1.png)
 
-![alt text](14-efs-network.png)
+![alt text](bilder/14-efs-network.png)
 
-![alt text](15-efs-policy.png)
+![alt text](bilder/15-efs-policy.png)
 
 ## Delmoment 4 – Objektlagring och backup
 
@@ -252,7 +252,7 @@ från bucketen med webbinnehåll, så att den kan ha egna regler och behörighet
 }
 ```
 
-![alt text](16-s3-livscykel.png)
+![alt text](bilder/16-s3-livscykel.png)
 
 ### Backup av databasen till S3
 
@@ -274,16 +274,16 @@ webbplatsen fungerar som vanligt under backupen. Skriptet körs varje natt kl. 0
 
 Den första backupen togs direkt av `install-wordpress.sh`.
 
-![alt text](28-cron.png)
+![alt text](bilder/28-cron.png)
 
-![alt text](29-backup-s3.png)
+![alt text](bilder/29-backup-s3.png)
 
 ### Automatisk backup i RDS
 
 RDS tar också egna automatiska backuper, med lagringstid **1 dag**. Det är det högsta som
 Free plan tillåter.
 
-![alt text](10-rds-backup.png)
+![alt text](bilder/10-rds-backup.png)
 
 **Lagringstid i drift: 14 dagar.** RDS automatiska backuper gör det möjligt att återställa
 databasen till valfri sekund inom lagringstiden (*point-in-time recovery*). Med 1 dag måste
@@ -309,7 +309,7 @@ De två backuptyperna kompletterar varandra:
 ./install-wordpress.sh
 ```
 
-![alt text](18-provision.png)
+![alt text](bilder/18-provision.png)
 
 `user-data-web.sh` installerar hela stacken när webbservern startar:
 
@@ -330,15 +330,15 @@ CREATE USER IF NOT EXISTS 'wordpress'@'10.0.1.%' IDENTIFIED BY '...';
 GRANT ALL PRIVILEGES ON wordpress.* TO 'wordpress'@'10.0.1.%';
 ```
 
-![alt text](19-install-wordpress.png)
+![alt text](bilder/19-install-wordpress.png)
 
-![alt text](20-wordpress-start.png)
+![alt text](bilder/20-wordpress-start.png)
 
-![alt text](21-wordpress-admin.png)
+![alt text](bilder/21-wordpress-admin.png)
 
-![alt text](22-wordpress-media.png)
+![alt text](bilder/22-wordpress-media.png)
 
-![alt text](23-wordpress-sida.png)
+![alt text](bilder/23-wordpress-sida.png)
 
 ## Delmoment 6 – Säkra åtkomsten
 
@@ -358,16 +358,16 @@ GRANT ALL PRIVILEGES ON wordpress.* TO 'wordpress'@'10.0.1.%';
 | **Kryptering under överföring** | TLS till RDS (verifierat certifikat), TLS till EFS (krävs av policyn), HTTPS till S3 och SSM | Avlyssning av trafiken inne i nätverket |
 | **Skyddade filer på servern** | `wp-config.php` och backupkonfigurationen kan bara läsas av root eller Apache | Att andra användare på servern läser lösenord och adresser |
 
-![alt text](04-sg-efs1.png)
-![alt text](04-sg-efs2.png)
+![alt text](bilder/04-sg-efs1.png)
+![alt text](bilder/04-sg-efs2.png)
 
-![alt text](05-sg-db.png)
+![alt text](bilder/05-sg-db.png)
 
-![alt text](06-sg-web-out.png)
+![alt text](bilder/06-sg-web-out.png)
 
-![alt text](07-nacl-private.png)
+![alt text](bilder/07-nacl-private.png)
 
-![alt text](17-ssm-parametrar.png)
+![alt text](bilder/17-ssm-parametrar.png)
 
 ## Delmoment 7 – Verifiera
 
@@ -390,9 +390,9 @@ GRANT ALL PRIVILEGES ON wordpress.* TO 'wordpress'@'10.0.1.%';
 
 Alla 25 tester i `verify-wordpress.sh` och alla 17 i `verify-network.sh` gav förväntat resultat.
 
-![alt text](24-verify-wordpress.png)
+![alt text](bilder/24-verify-wordpress.png)
 
-![alt text](25-verify-network.png)
+![alt text](bilder/25-verify-network.png)
 
 ### På servern
 
@@ -403,7 +403,7 @@ df -hT /var/www/html/wp-content
 sudo find /var/www/html/wp-content/uploads -type f
 ```
 
-![alt text](26-efs-monterad.png)
+![alt text](bilder/26-efs-monterad.png)
 
 WordPress-användaren ansluter med TLS och ser bara sin egen databas:
 
@@ -412,7 +412,7 @@ mysql --ssl-ca="$RDS_CA" --ssl-verify-server-cert -h "$DB_HOST" -u wordpress \
   -e "SHOW DATABASES; SHOW STATUS LIKE 'Ssl_cipher'; SELECT ID, post_title FROM wordpress.wp_posts WHERE post_type='page';"
 ```
 
-![alt text](27-databas-tls.png)
+![alt text](bilder/27-databas-tls.png)
 
 ## Städning
 
@@ -427,9 +427,9 @@ labbmiljö. I drift tas alltid en sista snapshot innan en databas tas bort.
 ./teardown-iam.sh
 ```
 
-![alt text](30-teardown.png)
+![alt text](bilder/30-teardown.png)
 
-![alt text](31-kontroll-stadning.png)
+![alt text](bilder/31-kontroll-stadning.png)
 
 ---
 
