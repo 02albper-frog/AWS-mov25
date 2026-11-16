@@ -1,0 +1,179 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Novatrix data - slumpade losenord i Secrets Manager, RDS MariaDB (Multi-AZ) och EFS
+  i de privata subnaten (v45).
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: novatrix
+    AllowedPattern: "[a-z][a-z0-9-]*"
+  DbInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+    Description: Instansklass for databasen
+  DbAllocatedStorage:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    Description: Lagring i GB (gp3)
+  DbMultiAZ:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Standby-databas i en annan AZ
+  DbBackupRetentionDays:
+    Type: Number
+    Default: 1
+    MinValue: 0
+    MaxValue: 35
+    Description: RDS automatiska backuper i dagar (Free plan tillater hogst 1, i drift 14)
+  DbName:
+    Type: String
+    Default: wordpress
+
+Resources:
+  # ---------------- Losenord, slumpade av Secrets Manager ----------------
+  DbMasterSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${EnvName}/db/master"
+      Description: Databasens huvudanvandare (anvands bara av administratoren)
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "novatrixadmin"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludePunctuation: true
+
+  WpDbSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${EnvName}/db/wordpress"
+      Description: WordPress egen databasanvandare (las av webbservern)
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "wordpress"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludePunctuation: true
+
+  WpAdminSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${EnvName}/wp/admin"
+      Description: Inloggning till WordPress adminpanel
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "novatrix-admin"}'
+        GenerateStringKey: password
+        PasswordLength: 24
+        ExcludePunctuation: true
+
+  # ---------------- RDS MariaDB ----------------
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub "${EnvName}-db-subnet-group"
+      DBSubnetGroupDescription: "Novatrix databas: privata subnat i tva AZ"
+      SubnetIds:
+        - { "Fn::ImportValue": !Sub "${EnvName}-PrivateSubnetAId" }
+        - { "Fn::ImportValue": !Sub "${EnvName}-PrivateSubnetBId" }
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    # I labbmiljon tas databasen bort med stacken; dumparna i backup-bucketen anvands
+    # for aterstallning. I drift: DeletionPolicy Snapshot.
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      DBInstanceIdentifier: !Sub "${EnvName}-db"
+      Engine: mariadb
+      DBInstanceClass: !Ref DbInstanceClass
+      AllocatedStorage: !Ref DbAllocatedStorage
+      StorageType: gp3
+      StorageEncrypted: true
+      MultiAZ: !Ref DbMultiAZ
+      PubliclyAccessible: false
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VPCSecurityGroups:
+        - { "Fn::ImportValue": !Sub "${EnvName}-DbSgId" }
+      DBName: !Ref DbName
+      MasterUsername: !Sub "{{resolve:secretsmanager:${DbMasterSecret}:SecretString:username}}"
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${DbMasterSecret}:SecretString:password}}"
+      BackupRetentionPeriod: !Ref DbBackupRetentionDays
+      PreferredBackupWindow: "01:00-01:30"
+      PreferredMaintenanceWindow: "sun:02:00-sun:02:30"
+      CopyTagsToSnapshot: true
+      AutoMinorVersionUpgrade: true
+      DeleteAutomatedBackups: true
+      Tags:
+        - { Key: Name, Value: !Sub "${EnvName}-db" }
+
+  # ---------------- EFS for wp-content ----------------
+  FileSystem:
+    Type: AWS::EFS::FileSystem
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+      LifecyclePolicies:
+        - TransitionToIA: AFTER_30_DAYS
+        - TransitionToPrimaryStorageClass: AFTER_1_ACCESS
+      BackupPolicy:
+        Status: DISABLED          # filerna sakerhetskopieras till backup-bucketen i stallet
+      FileSystemPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: TillatMonteringEndastViaMountTarget
+            Effect: Allow
+            Principal: { AWS: "*" }
+            Action:
+              - elasticfilesystem:ClientMount
+              - elasticfilesystem:ClientWrite
+              - elasticfilesystem:ClientRootAccess
+            Condition:
+              Bool:
+                elasticfilesystem:AccessedViaMountTarget: "true"
+          - Sid: KravKrypteradTrafik
+            Effect: Deny
+            Principal: { AWS: "*" }
+            Action: "*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+      FileSystemTags:
+        - { Key: Name, Value: !Sub "${EnvName}-efs" }
+
+  MountTargetA:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: { "Fn::ImportValue": !Sub "${EnvName}-PrivateSubnetAId" }
+      SecurityGroups:
+        - { "Fn::ImportValue": !Sub "${EnvName}-EfsSgId" }
+
+  MountTargetB:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: { "Fn::ImportValue": !Sub "${EnvName}-PrivateSubnetBId" }
+      SecurityGroups:
+        - { "Fn::ImportValue": !Sub "${EnvName}-EfsSgId" }
+
+Outputs:
+  DbEndpoint:
+    Value: !GetAtt Database.Endpoint.Address
+    Export: { Name: !Sub "${EnvName}-DbEndpoint" }
+  DbName:
+    Value: !Ref DbName
+    Export: { Name: !Sub "${EnvName}-DbName" }
+  EfsId:
+    Value: !Ref FileSystem
+    Export: { Name: !Sub "${EnvName}-EfsId" }
+  DbMasterSecretName:
+    Value: !Sub "${EnvName}/db/master"
+  WpDbSecretName:
+    Value: !Sub "${EnvName}/db/wordpress"
+    Export: { Name: !Sub "${EnvName}-WpDbSecretName" }
+  WpAdminSecretName:
+    Value: !Sub "${EnvName}/wp/admin"

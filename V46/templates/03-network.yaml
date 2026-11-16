@@ -1,0 +1,441 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Novatrix natverk - VPC, fyra subnat i tva AZ, routing, NACL:er och security groups
+  enligt defense in depth (v44/v45).
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: novatrix
+    AllowedPattern: "[a-z][a-z0-9-]*"
+  AdminCidr:
+    Type: String
+    Description: Adressen som far SSH till bastion, t.ex. 1.2.3.4/32 (satts av deploy.sh)
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+  MgmtCidr:
+    Type: String
+    Default: 10.0.0.0/24
+  PublicCidr:
+    Type: String
+    Default: 10.0.1.0/24
+  PrivateACidr:
+    Type: String
+    Default: 10.0.11.0/24
+  PrivateBCidr:
+    Type: String
+    Default: 10.0.12.0/24
+
+Resources:
+  # ---------------- VPC och internet gateway ----------------
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: !Sub "${EnvName}-vpc" }]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: !Sub "${EnvName}-igw" }]
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  # ---------------- Subnat ----------------
+  MgmtSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref MgmtCidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags: [{ Key: Name, Value: !Sub "${EnvName}-mgmt" }]
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicCidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags: [{ Key: Name, Value: !Sub "${EnvName}-public" }]
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateACidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags: [{ Key: Name, Value: !Sub "${EnvName}-private-a" }]
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateBCidr
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags: [{ Key: Name, Value: !Sub "${EnvName}-private-b" }]
+
+  # ---------------- Route tables ----------------
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub "${EnvName}-public-rt" }]
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  MgmtRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref MgmtSubnet, RouteTableId: !Ref PublicRouteTable }
+
+  PublicRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PublicSubnet, RouteTableId: !Ref PublicRouteTable }
+
+  PrivateRouteTable:      # ingen vag till internet, endast lokal trafik inom VPC:t
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub "${EnvName}-private-rt" }]
+
+  PrivateARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PrivateSubnetA, RouteTableId: !Ref PrivateRouteTable }
+
+  PrivateBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PrivateSubnetB, RouteTableId: !Ref PrivateRouteTable }
+
+  # ---------------- NACL:er (subnatsniva, stateless) ----------------
+  MgmtNacl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub "${EnvName}-mgmt-nacl" }]
+
+  PublicNacl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub "${EnvName}-public-nacl" }]
+
+  PrivateNacl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub "${EnvName}-private-nacl" }]
+
+  MgmtNaclAssoc:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties: { SubnetId: !Ref MgmtSubnet, NetworkAclId: !Ref MgmtNacl }
+
+  PublicNaclAssoc:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties: { SubnetId: !Ref PublicSubnet, NetworkAclId: !Ref PublicNacl }
+
+  PrivateANaclAssoc:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties: { SubnetId: !Ref PrivateSubnetA, NetworkAclId: !Ref PrivateNacl }
+
+  PrivateBNaclAssoc:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties: { SubnetId: !Ref PrivateSubnetB, NetworkAclId: !Ref PrivateNacl }
+
+  # NACL-regler: protokoll 6 = TCP. Allt som inte matchar nekas av regeln *.
+  MgmtIn100:    # SSH fran admin
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref MgmtNacl
+      RuleNumber: 100
+      Egress: false
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: !Ref AdminCidr
+      PortRange: { From: 22, To: 22 }
+  MgmtIn110:    # svar fran webbservern
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref MgmtNacl
+      RuleNumber: 110
+      Egress: false
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: !Ref PublicCidr
+      PortRange: { From: 1024, To: 65535 }
+  MgmtOut100:    # svar till admin
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref MgmtNacl
+      RuleNumber: 100
+      Egress: true
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: !Ref AdminCidr
+      PortRange: { From: 1024, To: 65535 }
+  MgmtOut110:    # SSH till webbservern
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref MgmtNacl
+      RuleNumber: 110
+      Egress: true
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: !Ref PublicCidr
+      PortRange: { From: 22, To: 22 }
+  PublicIn100:    # HTTP
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PublicNacl
+      RuleNumber: 100
+      Egress: false
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: 0.0.0.0/0
+      PortRange: { From: 80, To: 80 }
+  PublicIn110:    # HTTPS
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PublicNacl
+      RuleNumber: 110
+      Egress: false
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: 0.0.0.0/0
+      PortRange: { From: 443, To: 443 }
+  PublicIn120:    # SSH endast fran bastion-subnatet
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PublicNacl
+      RuleNumber: 120
+      Egress: false
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: !Ref MgmtCidr
+      PortRange: { From: 22, To: 22 }
+  PublicIn130:    # svar pa serverns egna anrop
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PublicNacl
+      RuleNumber: 130
+      Egress: false
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: 0.0.0.0/0
+      PortRange: { From: 1024, To: 65535 }
+  PublicOut100:    # svar till besokare och bastion
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PublicNacl
+      RuleNumber: 100
+      Egress: true
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: 0.0.0.0/0
+      PortRange: { From: 1024, To: 65535 }
+  PublicOut110:    # HTTPS ut (S3, Secrets Manager, paketforrad)
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PublicNacl
+      RuleNumber: 110
+      Egress: true
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: 0.0.0.0/0
+      PortRange: { From: 443, To: 443 }
+  PublicOut120:    # MySQL till RDS
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PublicNacl
+      RuleNumber: 120
+      Egress: true
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: !Ref PrivateACidr
+      PortRange: { From: 3306, To: 3306 }
+  PublicOut130:    # MySQL till RDS (standby)
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PublicNacl
+      RuleNumber: 130
+      Egress: true
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: !Ref PrivateBCidr
+      PortRange: { From: 3306, To: 3306 }
+  PublicOut140:    # NFS till EFS
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PublicNacl
+      RuleNumber: 140
+      Egress: true
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: !Ref PrivateACidr
+      PortRange: { From: 2049, To: 2049 }
+  PublicOut150:    # NFS till EFS (andra AZ)
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PublicNacl
+      RuleNumber: 150
+      Egress: true
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: !Ref PrivateBCidr
+      PortRange: { From: 2049, To: 2049 }
+  PrivateIn100:    # MySQL fran webbsubnatet
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PrivateNacl
+      RuleNumber: 100
+      Egress: false
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: !Ref PublicCidr
+      PortRange: { From: 3306, To: 3306 }
+  PrivateIn110:    # NFS fran webbsubnatet
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PrivateNacl
+      RuleNumber: 110
+      Egress: false
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: !Ref PublicCidr
+      PortRange: { From: 2049, To: 2049 }
+  PrivateOut100:    # svar till webbsubnatet
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PrivateNacl
+      RuleNumber: 100
+      Egress: true
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: !Ref PublicCidr
+      PortRange: { From: 1024, To: 65535 }
+  # ---------------- Security groups (instansniva, stateful) ----------------
+  # Standardregeln for all utgaende trafik ersatts overallt: antingen med de regler som
+  # behovs, eller med en regel till 127.0.0.1/32 som i praktiken inte slapper ut nagonting.
+  BastionSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${EnvName}-bastion-sg"
+      GroupDescription: "Bastion: SSH fran admin-IP, SSH ut endast till webbservern"
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: !Ref AdminCidr, Description: "SSH fran admin-IP" }
+      SecurityGroupEgress:
+        - { IpProtocol: tcp, FromPort: 22, ToPort: 22, DestinationSecurityGroupId: !Ref WebSg, Description: "SSH till webbservern" }
+      Tags: [{ Key: Name, Value: !Sub "${EnvName}-bastion-sg" }]
+
+  WebSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${EnvName}-web-sg"
+      GroupDescription: "Webbserver: HTTP/HTTPS fran alla, SSH fran bastion"
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: "HTTP fran alla" }
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: "HTTPS fran alla" }
+      SecurityGroupEgress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: "HTTPS till S3, Secrets Manager och paketforrad" }
+        - { IpProtocol: tcp, FromPort: 3306, ToPort: 3306, DestinationSecurityGroupId: !Ref DbSg, Description: "MySQL till databasen" }
+        - { IpProtocol: tcp, FromPort: 2049, ToPort: 2049, DestinationSecurityGroupId: !Ref EfsSg, Description: "NFS till EFS" }
+      Tags: [{ Key: Name, Value: !Sub "${EnvName}-web-sg" }]
+
+  WebFromBastion:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref WebSg
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      SourceSecurityGroupId: !Ref BastionSg
+      Description: "SSH endast fran bastion"
+
+  DbSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${EnvName}-db-sg"
+      GroupDescription: "Databas: MySQL fran webbservern, ingen utgaende trafik"
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - { IpProtocol: "-1", CidrIp: 127.0.0.1/32, Description: "Ingen utgaende trafik" }
+      Tags: [{ Key: Name, Value: !Sub "${EnvName}-db-sg" }]
+
+  DbFromWeb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DbSg
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      SourceSecurityGroupId: !Ref WebSg
+      Description: "MySQL endast fran webbservern"
+
+  EfsSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${EnvName}-efs-sg"
+      GroupDescription: "EFS: NFS fran webbservern, ingen utgaende trafik"
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - { IpProtocol: "-1", CidrIp: 127.0.0.1/32, Description: "Ingen utgaende trafik" }
+      Tags: [{ Key: Name, Value: !Sub "${EnvName}-efs-sg" }]
+
+  EfsFromWeb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref EfsSg
+      IpProtocol: tcp
+      FromPort: 2049
+      ToPort: 2049
+      SourceSecurityGroupId: !Ref WebSg
+      Description: "NFS endast fran webbservern"
+
+Outputs:
+  VpcId:
+    Value: !Ref Vpc
+    Export: { Name: !Sub "${EnvName}-VpcId" }
+  MgmtSubnetId:
+    Value: !Ref MgmtSubnet
+    Export: { Name: !Sub "${EnvName}-MgmtSubnetId" }
+  PublicSubnetId:
+    Value: !Ref PublicSubnet
+    Export: { Name: !Sub "${EnvName}-PublicSubnetId" }
+  PrivateSubnetAId:
+    Value: !Ref PrivateSubnetA
+    Export: { Name: !Sub "${EnvName}-PrivateSubnetAId" }
+  PrivateSubnetBId:
+    Value: !Ref PrivateSubnetB
+    Export: { Name: !Sub "${EnvName}-PrivateSubnetBId" }
+  PrivateRouteTableId:
+    Value: !Ref PrivateRouteTable
+    Export: { Name: !Sub "${EnvName}-PrivateRouteTableId" }
+  BastionSgId:
+    Value: !Ref BastionSg
+    Export: { Name: !Sub "${EnvName}-BastionSgId" }
+  WebSgId:
+    Value: !Ref WebSg
+    Export: { Name: !Sub "${EnvName}-WebSgId" }
+  DbSgId:
+    Value: !Ref DbSg
+    Export: { Name: !Sub "${EnvName}-DbSgId" }
+  EfsSgId:
+    Value: !Ref EfsSg
+    Export: { Name: !Sub "${EnvName}-EfsSgId" }
+  PublicCidr:
+    Value: !Ref PublicCidr
+    Export: { Name: !Sub "${EnvName}-PublicCidr" }

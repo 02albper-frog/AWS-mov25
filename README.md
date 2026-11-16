@@ -12,3 +12,4 @@
 | v43 | IAM och identitet – grupper, policies och EC2-roll mot S3 | [V43](V43/) |
 | v44 | Nätverk och säkerhet – VPC, subnät, NACL:er, security groups och bastion | [V44](V44/) |
 | v45 | Storage och databas – RDS Multi-AZ, EFS, S3-backup och WordPress | [V45](V45/) |
+| v46 | IaC med CloudFormation – hela stacken som kod, backup och återställning | [V46](V46/) |

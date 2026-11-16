@@ -1,0 +1,194 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Novatrix app - bastion och webbserver med WordPress. Webbservern installeras av user data
+  och signalerar till CloudFormation nar installationen ar klar (v44/v45).
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: novatrix
+    AllowedPattern: "[a-z][a-z0-9-]*"
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Befintligt nyckelpar for SSH
+  WebInstanceType:
+    Type: String
+    Default: t3.micro
+  BastionInstanceType:
+    Type: String
+    Default: t3.micro
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: Senaste Amazon Linux 2023, slas upp vid varje deploy
+
+Resources:
+  # ---------------- Bastion: ingen IAM-roll, ingen user data ----------------
+  Bastion:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref BastionInstanceType
+      KeyName: !Ref KeyName
+      MetadataOptions:
+        HttpTokens: required      # IMDSv2
+        HttpEndpoint: enabled
+      NetworkInterfaces:
+        - DeviceIndex: "0"
+          SubnetId: { "Fn::ImportValue": !Sub "${EnvName}-MgmtSubnetId" }
+          GroupSet:
+            - { "Fn::ImportValue": !Sub "${EnvName}-BastionSgId" }
+          AssociatePublicIpAddress: true
+      Tags:
+        - { Key: Name, Value: !Sub "${EnvName}-bastion" }
+
+  # ---------------- Webbserver med WordPress ----------------
+  WebServer:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT20M            # stacken ar klar forst nar installationen har lyckats
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref WebInstanceType
+      KeyName: !Ref KeyName
+      IamInstanceProfile: { "Fn::ImportValue": !Sub "${EnvName}-WebInstanceProfileName" }
+      MetadataOptions:
+        HttpTokens: required
+        HttpEndpoint: enabled
+      NetworkInterfaces:
+        - DeviceIndex: "0"
+          SubnetId: { "Fn::ImportValue": !Sub "${EnvName}-PublicSubnetId" }
+          GroupSet:
+            - { "Fn::ImportValue": !Sub "${EnvName}-WebSgId" }
+          AssociatePublicIpAddress: true
+      Tags:
+        - { Key: Name, Value: !Sub "${EnvName}-web" }
+      UserData:
+        Fn::Base64:
+          Fn::Sub:
+            - |
+              #!/bin/bash
+              # User data for webbservern (v46): Apache, PHP och WordPress, EFS pa wp-content,
+              # wp-config.php och nattlig backup av databas och filer till S3.
+              # Databasanvandaren och WordPress-installationen gors av install-wordpress.sh.
+              # Logg: /var/log/cloud-init-output.log
+
+              EFS_ID="${EfsId}"
+              DB_HOST="${DbHost}"
+              DB_NAME="${DbName}"
+              WP_SECRET="${WpSecret}"
+              BACKUP_BUCKET="${BackupBucket}"
+              export AWS_DEFAULT_REGION="${AWS::Region}"
+              export HOME=/root
+              WEBROOT=/var/www/html
+
+              # ---- 1. Programvara ----
+              dnf update -y
+              dnf install -y httpd mod_ssl php php-fpm php-mysqli php-json mariadb105 \
+                amazon-efs-utils cronie jq aws-cfn-bootstrap
+              dnf install -y php-gd php-mbstring php-xml php-intl || true
+
+              # ---- 2. HTTPS-certifikat (sjalvsignerat), tjanster och RDS certifikatkedja ----
+              if [ ! -f /etc/pki/tls/certs/localhost.crt ]; then
+                openssl req -x509 -nodes -newkey rsa:2048 -days 365 -subj "/CN=novatrix-web" \
+                  -keyout /etc/pki/tls/private/localhost.key -out /etc/pki/tls/certs/localhost.crt
+              fi
+              systemctl enable --now php-fpm httpd crond
+              RDS_CA=/etc/pki/tls/certs/rds-global-bundle.pem
+              curl -fsSL -o "$RDS_CA" https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+
+              # ---- 3. WP-CLI (med 512 MB minne) och WordPress pa svenska ----
+              curl -fsSL -o /usr/local/lib/wp-cli.phar \
+                https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+              printf '#!/bin/bash\nexec php -d memory_limit=512M /usr/local/lib/wp-cli.phar "$@"\n' > /usr/local/bin/wp
+              chmod +x /usr/local/bin/wp
+              WP="/usr/local/bin/wp --allow-root --path=$WEBROOT"
+              $WP core download --locale=sv_SE
+
+              # ---- 4. EFS pa wp-content, med krypterad trafik (TLS) ----
+              mv "$WEBROOT/wp-content" /tmp/wp-content-original
+              mkdir -p "$WEBROOT/wp-content"
+              echo "$EFS_ID:/ $WEBROOT/wp-content efs _netdev,tls 0 0" >> /etc/fstab
+              for i in $(seq 1 12); do
+                mount "$WEBROOT/wp-content" && break
+                echo "EFS-montering, forsok $i misslyckades, vantar 10 sekunder ..."
+                sleep 10
+              done
+              # Fyll pa det som saknas (teman, tillagg). -n skriver aldrig over befintliga filer.
+              cp -an /tmp/wp-content-original/. "$WEBROOT/wp-content/"
+              mkdir -p "$WEBROOT/wp-content/uploads"
+
+              # ---- 5. wp-config.php med WordPress-anvandarens losenord fran Secrets Manager ----
+              SECRET=$(aws secretsmanager get-secret-value --secret-id "$WP_SECRET" \
+                --query SecretString --output text)
+              $WP config create --dbname="$DB_NAME" \
+                --dbuser="$(echo "$SECRET" | jq -r .username)" \
+                --dbpass="$(echo "$SECRET" | jq -r .password)" \
+                --dbhost="$DB_HOST" --locale=sv_SE --skip-check
+              unset SECRET
+              $WP config set FS_METHOD direct
+              $WP config set DISALLOW_FILE_EDIT true --raw
+              $WP config set MYSQL_CLIENT_FLAGS MYSQLI_CLIENT_SSL --raw
+              chown -R apache:apache "$WEBROOT"
+              chmod 640 "$WEBROOT/wp-config.php"
+
+              # ---- 6. Nattlig backup av databasen och uppladdade filer till S3 ----
+              cat > /etc/novatrix-backup.conf <<CONF
+              DB_HOST=$DB_HOST
+              DB_NAME=$DB_NAME
+              WP_SECRET=$WP_SECRET
+              BACKUP_BUCKET=$BACKUP_BUCKET
+              RDS_CA=$RDS_CA
+              export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
+              CONF
+              chmod 600 /etc/novatrix-backup.conf
+
+              cat > /usr/local/bin/novatrix-backup.sh <<'BACKUP'
+              #!/bin/bash
+              # Backup av WordPress: databasen till db/ och uppladdade filer till uploads/.
+              # Rollen tillater bara s3:PutObject, sa servern kan varken lasa eller radera backuper.
+              set -euo pipefail
+              source /etc/novatrix-backup.conf
+              STAMP=$(date -u +%Y-%m-%dT%H%M%SZ)
+              SECRET=$(aws secretsmanager get-secret-value --secret-id "$WP_SECRET" \
+                --query SecretString --output text)
+              DB_USER=$(echo "$SECRET" | jq -r .username)
+              MYSQL_PWD=$(echo "$SECRET" | jq -r .password)
+              export MYSQL_PWD
+              DUMP=$(command -v mariadb-dump || command -v mysqldump)
+              "$DUMP" --ssl-ca="$RDS_CA" --ssl-verify-server-cert \
+                -h "$DB_HOST" -u "$DB_USER" --single-transaction --no-tablespaces "$DB_NAME" \
+                | gzip | aws s3 cp - "s3://$BACKUP_BUCKET/db/$DB_NAME-$STAMP.sql.gz"
+              tar -czf - -C /var/www/html/wp-content uploads \
+                | aws s3 cp - "s3://$BACKUP_BUCKET/uploads/uploads-$STAMP.tar.gz"
+              echo "$(date -u '+%F %T') Backup klar: db/$DB_NAME-$STAMP.sql.gz och uploads/uploads-$STAMP.tar.gz"
+              BACKUP
+              chmod 750 /usr/local/bin/novatrix-backup.sh
+              echo "0 3 * * * root /usr/local/bin/novatrix-backup.sh >> /var/log/novatrix-backup.log 2>&1" \
+                > /etc/cron.d/novatrix-backup
+
+              # ---- 7. Installationsloggen till S3 ----
+              INSTANCE_ID=$(ec2-metadata --instance-id | cut -d' ' -f2)
+              aws s3 cp /var/log/cloud-init-output.log "s3://$BACKUP_BUCKET/logs/$INSTANCE_ID-cloud-init.log" || true
+
+              # ---- 8. Signalera till CloudFormation om installationen lyckades ----
+              if [ -f "$WEBROOT/wp-config.php" ] && [ -f "$WEBROOT/wp-includes/version.php" ] \
+                 && findmnt -n "$WEBROOT/wp-content" > /dev/null; then RC=0; else RC=1; fi
+              /opt/aws/bin/cfn-signal -e $RC --stack "${AWS::StackName}" --resource WebServer --region "${AWS::Region}"
+            - EfsId: { "Fn::ImportValue": !Sub "${EnvName}-EfsId" }
+              DbHost: { "Fn::ImportValue": !Sub "${EnvName}-DbEndpoint" }
+              DbName: { "Fn::ImportValue": !Sub "${EnvName}-DbName" }
+              WpSecret: { "Fn::ImportValue": !Sub "${EnvName}-WpDbSecretName" }
+              BackupBucket: { "Fn::ImportValue": !Sub "${EnvName}-BackupBucketName" }
+
+Outputs:
+  WebPublicIp:
+    Value: !GetAtt WebServer.PublicIp
+  WebPrivateIp:
+    Value: !GetAtt WebServer.PrivateIp
+  BastionPublicIp:
+    Value: !GetAtt Bastion.PublicIp
+  WebUrl:
+    Value: !Sub "http://${WebServer.PublicIp}"
