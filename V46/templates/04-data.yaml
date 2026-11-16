@@ -117,7 +117,7 @@ Resources:
       PerformanceMode: generalPurpose
       ThroughputMode: bursting
       LifecyclePolicies:
-        - TransitionToIA: AFTER_30_DAYS
+        - TransitionToIA: AFTER_14_DAYS
         - TransitionToPrimaryStorageClass: AFTER_1_ACCESS
       BackupPolicy:
         Status: DISABLED          # filerna sakerhetskopieras till backup-bucketen i stallet
