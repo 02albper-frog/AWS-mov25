@@ -56,7 +56,7 @@ echo ""
 echo "== 2. Uppladdade filer =="
 if [ -n '$UP_URL' ]; then
   curl -fsSL '$UP_URL' | tar -xzf - -C /var/www/html/wp-content
-  chown -R apache:apache /var/www/html/wp-content/uploads
+    chown -R apache:apache /var/www/html/wp-content
   echo "\$(find /var/www/html/wp-content/uploads -type f | wc -l) filer är återställda"
 else
   echo "Ingen filbackup, hoppar över"

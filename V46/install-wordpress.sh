@@ -54,6 +54,7 @@ else
   \$WP option update page_on_front "\$PAGE"
   echo "WordPress installerat med startsidan Om Novatrix"
 fi
+chown -R apache:apache /var/www/html/wp-content
 EOF_REMOTE
 
 echo ""
