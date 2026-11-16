@@ -49,13 +49,15 @@ fi
 echo ""
 echo "== 2. Stackar =="
 delete_stack app
-# Lösenorden raderas direkt i stället för att vänta 7-30 dagar på slutlig radering,
-# så att namnen kan användas igen nästa gång miljön byggs.
+delete_stack data
+# CloudFormation schemalägger raderingen av lösenorden med 7-30 dagars väntetid. De raderas
+# här direkt efteråt, så att namnen kan användas igen nästa gång miljön byggs. Det måste ske
+# EFTER data-stacken, eftersom databasen läser sitt lösenord via en dynamisk referens även
+# när den tas bort.
 for s in "$EnvName/db/master" "$EnvName/db/wordpress" "$EnvName/wp/admin"; do
   aws secretsmanager delete-secret --region "$Region" --secret-id "$s" \
     --force-delete-without-recovery > /dev/null 2>&1 && echo "Raderade hemligheten $s"
 done
-delete_stack data
 delete_stack network
 delete_stack iam
 
