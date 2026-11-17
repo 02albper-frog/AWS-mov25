@@ -192,28 +192,28 @@ ett syntaxfel stoppar allt innan något skapas. Sedan byggs stackarna i ordning 
 `aws cloudformation deploy`, som skapar och genomför ett change set för varje stack. Körs
 skriptet igen utan ändringar händer ingenting.
 
-![alt text](01-deploy.png)
+![alt text](bilder/01-deploy.png)
 
-![alt text](02-stacks.png)
+![alt text](bilder/02-stacks.png)
 
-![alt text](03-network-resources1.png)
-![alt text](03-network-resources2.png)
-![alt text](03-network-resources3.png)
+![alt text](bilder/03-network-resources1.png)
+![alt text](bilder/03-network-resources2.png)
+![alt text](bilder/03-network-resources3.png)
 
-![alt text](04-data-events1.png)
-![alt text](04-data-events2.png)
-![alt text](04-data-events3.png)
+![alt text](bilder/04-data-events1.png)
+![alt text](bilder/04-data-events2.png)
+![alt text](bilder/04-data-events3.png)
 
-![alt text](05-app-outputs.png)
+![alt text](bilder/05-app-outputs.png)
 
-![alt text](06-exports1.png)
-![alt text](06-exports2.png)
+![alt text](bilder/06-exports1.png)
+![alt text](bilder/06-exports2.png)
 
-![alt text](07-data-parameters.png)
+![alt text](bilder/07-data-parameters.png)
 
-![alt text](08-backup-template1.png)
-![alt text](08-backup-template2.png)
-![alt text](08-backup-template3.png)
+![alt text](bilder/08-backup-template1.png)
+![alt text](bilder/08-backup-template2.png)
+![alt text](bilder/08-backup-template3.png)
 
 ### WordPress
 
@@ -224,11 +224,11 @@ skriptet igen utan ändringar händer ingenting.
 Skriptet skapar WordPress egen databasanvändare och installerar WordPress, med *Om Novatrix*
 som startsida. Lösenorden hämtas från Secrets Manager.
 
-![alt text](09-install-wordpress.png)
+![alt text](bilder/09-install-wordpress.png)
 
-![alt text](10-wordpress-start.png)
+![alt text](bilder/10-wordpress-start.png)
 
-![alt text](11-wordpress-media.png)
+![alt text](bilder/11-wordpress-media.png)
 
 ### Verifiering
 
@@ -255,9 +255,9 @@ templates är den enda sanningen om hur miljön ska se ut.
 
 Alla 32 tester gav förväntat resultat.
 
-![alt text](12-backup-now.png)
+![alt text](bilder/12-backup-now.png)
 
-![alt text](13-verify.png)
+![alt text](bilder/13-verify.png)
 
 ## Delmoment 4 – Versionshantering
 
@@ -283,7 +283,7 @@ CloudFormation visade att bara `FileSystem` ändras, och `Replacement: False` be
 filsystemet ändras på plats utan att bytas ut. Inga filer går alltså förlorade. Om det hade
 stått `Replacement: True` på databasen hade man vetat i förväg att ändringen skulle radera den.
 
-![alt text](14-change-set.png)
+![alt text](bilder/14-change-set.png)
 
 Ändringen committades och genomfördes med samma kommando som skapade stacken. Bara
 `novatrix-data` uppdaterades; de andra stackarna rapporterade att inget behövde ändras.
@@ -295,11 +295,11 @@ git push
 ./deploy.sh
 ```
 
-![alt text](15-git-diff.png)
+![alt text](bilder/15-git-diff.png)
 
-![alt text](16-deploy-update.png)
+![alt text](bilder/16-deploy-update.png)
 
-![alt text](17-stack-updated.png)
+![alt text](bilder/17-stack-updated.png)
 
 ### Historiken
 
@@ -319,9 +319,9 @@ Historiken visar två sorters ändringar. `24638ba` är en planerad förbättrin
 bilder eftersom mappen ägdes av root, och nedrivningen misslyckades eftersom lösenorden raderades
 innan databasen (se *Städning* nedan). Varje fel rättades i koden och dokumenterades i en commit.
 
-![alt text](24-git-log2.png)
+![alt text](bilder/24-git-log2.png)
 
-![alt text](19-github-history.png)
+![alt text](bilder/19-github-history.png)
 
 ### Hur versionshantering hjälper drift och samarbete
 
@@ -418,15 +418,15 @@ aws cloudformation delete-stack --region eu-north-1 --stack-name novatrix-data \
   --retain-resources Database
 ```
 
-![alt text](21-retain-resources.png)
+![alt text](bilder/21-retain-resources.png)
 
 Felet rättades i `destroy.sh` (commit `df24965`): lösenorden raderas nu efter datastacken.
 
-![alt text](22-destroy.png)
+![alt text](bilder/22-destroy.png)
 
 Efter nedrivningen finns bara `novatrix-backup` kvar, med backuperna av databasen och bilderna.
 
-![alt text](23-bara-backup-kvar.png)
+![alt text](bilder/23-bara-backup-kvar.png)
 
 ---
 
