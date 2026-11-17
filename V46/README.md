@@ -402,7 +402,7 @@ aws cloudformation describe-stack-events --region eu-north-1 --stack-name novatr
   --output table
 ```
 
-![alt text](<20 delete-failed.png>)
+![alt text](<bilder/20 delete-failed.png>)
 
 `destroy.sh` raderade lösenorden i Secrets Manager *innan* datastacken togs bort. Databasen
 läser sitt lösenord via en dynamisk referens, och CloudFormation slår upp den även när
