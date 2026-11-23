@@ -1,0 +1,360 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Novatrix app (v47) - bastion, launch template, Auto Scaling-grupp over tva AZ och
+  Application Load Balancer med halsokontroller. Nya webbservrar installeras automatiskt
+  och rullas ut en i taget nar launch templaten andras.
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: novatrix
+    AllowedPattern: "[a-z][a-z0-9-]*"
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Befintligt nyckelpar for SSH
+  WebInstanceType:
+    Type: String
+    Default: t3.micro
+  BastionInstanceType:
+    Type: String
+    Default: t3.micro
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: Senaste Amazon Linux 2023, slas upp vid varje deploy
+  AsgMinSize:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    Description: Minsta antal webbservrar (en per zon vid 2)
+  AsgMaxSize:
+    Type: Number
+    Default: 4
+    MinValue: 1
+    Description: Hogsta antal webbservrar vid hog last (kostnadstak)
+  CpuTargetPercent:
+    Type: Number
+    Default: 50
+    MinValue: 10
+    MaxValue: 90
+    Description: Genomsnittlig CPU som Auto Scaling forsoker halla gruppen vid
+  EnableDetailedMonitoring:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: CPU-matning varje minut i stallet for var 5:e, sa att gruppen reagerar snabbare
+  HealthCheckPath:
+    Type: String
+    Default: /health.html
+
+Resources:
+  # ---------------- Bastion: ingen IAM-roll, ingen user data ----------------
+  Bastion:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref BastionInstanceType
+      KeyName: !Ref KeyName
+      MetadataOptions:
+        HttpTokens: required
+        HttpEndpoint: enabled
+      NetworkInterfaces:
+        - DeviceIndex: "0"
+          SubnetId: { "Fn::ImportValue": !Sub "${EnvName}-MgmtSubnetId" }
+          GroupSet:
+            - { "Fn::ImportValue": !Sub "${EnvName}-BastionSgId" }
+          AssociatePublicIpAddress: true
+      Tags:
+        - { Key: Name, Value: !Sub "${EnvName}-bastion" }
+
+  # ---------------- Application Load Balancer ----------------
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${EnvName}-alb"
+      Type: application
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      Subnets:
+        - { "Fn::ImportValue": !Sub "${EnvName}-PublicSubnetAId" }
+        - { "Fn::ImportValue": !Sub "${EnvName}-PublicSubnetBId" }
+      SecurityGroups:
+        - { "Fn::ImportValue": !Sub "${EnvName}-AlbSgId" }
+      LoadBalancerAttributes:
+        - { Key: routing.http.drop_invalid_header_fields.enabled, Value: "true" }
+      Tags:
+        - { Key: Name, Value: !Sub "${EnvName}-alb" }
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${EnvName}-web-tg"
+      VpcId: { "Fn::ImportValue": !Sub "${EnvName}-VpcId" }
+      Protocol: HTTP
+      Port: 80
+      TargetType: instance
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: !Ref HealthCheckPath
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2       # frisk efter 2 lyckade kontroller (30 s)
+      UnhealthyThresholdCount: 2     # tas ur trafiken efter 2 misslyckade kontroller (30 s)
+      Matcher:
+        HttpCode: "200"
+      TargetGroupAttributes:
+        - { Key: deregistration_delay.timeout_seconds, Value: "30" }
+      Tags:
+        - { Key: Name, Value: !Sub "${EnvName}-web-tg" }
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # ---------------- Launch template: mallen for varje webbserver ----------------
+  WebLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "${EnvName}-web-lt"
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags: [{ Key: Name, Value: !Sub "${EnvName}-web-lt" }]
+      LaunchTemplateData:
+        ImageId: !Ref LatestAmiId
+        InstanceType: !Ref WebInstanceType
+        KeyName: !Ref KeyName
+        IamInstanceProfile:
+          Name: { "Fn::ImportValue": !Sub "${EnvName}-WebInstanceProfileName" }
+        Monitoring:
+          Enabled: !Ref EnableDetailedMonitoring
+        MetadataOptions:
+          HttpTokens: required        # IMDSv2
+          HttpEndpoint: enabled
+          InstanceMetadataTags: disabled
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: true    # for paketforrad, S3 och Secrets Manager (ingen NAT)
+            Groups:
+              - { "Fn::ImportValue": !Sub "${EnvName}-WebSgId" }
+        TagSpecifications:
+          - ResourceType: volume
+            Tags: [{ Key: Name, Value: !Sub "${EnvName}-web" }]
+        UserData:
+          Fn::Base64:
+            Fn::Sub:
+              - |
+                #!/bin/bash
+                # User data for webbservrarna (v47). Varje ny server i gruppen installeras
+                # identiskt: Apache, PHP och WordPress, EFS pa wp-content, wp-config.php med
+                # gemensamma nycklar, halsokontrollsida och nattlig backup.
+                # Logg: /var/log/cloud-init-output.log
+
+                EFS_ID="${EfsId}"
+                DB_HOST="${DbHost}"
+                DB_NAME="${DbName}"
+                WP_SECRET="${WpSecret}"
+                SALT_SECRET="${SaltSecret}"
+                BACKUP_BUCKET="${BackupBucket}"
+                HEALTH_PATH="${HealthCheckPath}"
+                export AWS_DEFAULT_REGION="${AWS::Region}"
+                export HOME=/root
+                WEBROOT=/var/www/html
+                INSTANCE_ID=$(ec2-metadata --instance-id | cut -d' ' -f2)
+
+                # ---- 1. Programvara ----
+                dnf update -y
+                dnf install -y httpd php php-fpm php-mysqli php-json mariadb105 \
+                  amazon-efs-utils cronie jq aws-cfn-bootstrap
+                dnf install -y php-gd php-mbstring php-xml php-intl || true
+
+                # ---- 2. Apache: visa vilken server som svarar, stang installationssidan ----
+                cat > /etc/httpd/conf.d/novatrix.conf <<CONF
+                Header always set X-Novatrix-Instance "$INSTANCE_ID"
+                <Location "/wp-admin/install.php">
+                    Require all denied
+                </Location>
+                CONF
+                systemctl enable --now php-fpm httpd crond
+                RDS_CA=/etc/pki/tls/certs/rds-global-bundle.pem
+                curl -fsSL -o "$RDS_CA" https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+
+                # ---- 3. WP-CLI (med 512 MB minne) och WordPress pa svenska ----
+                curl -fsSL -o /usr/local/lib/wp-cli.phar \
+                  https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+                printf '#!/bin/bash\nexec php -d memory_limit=512M /usr/local/lib/wp-cli.phar "$@"\n' > /usr/local/bin/wp
+                chmod +x /usr/local/bin/wp
+                WP="/usr/local/bin/wp --allow-root --path=$WEBROOT"
+                $WP core download --locale=sv_SE
+
+                # ---- 4. EFS pa wp-content, med krypterad trafik (TLS) ----
+                mv "$WEBROOT/wp-content" /tmp/wp-content-original
+                mkdir -p "$WEBROOT/wp-content"
+                echo "$EFS_ID:/ $WEBROOT/wp-content efs _netdev,tls 0 0" >> /etc/fstab
+                for i in $(seq 1 12); do
+                  mount "$WEBROOT/wp-content" && break
+                  echo "EFS-montering, forsok $i misslyckades, vantar 10 sekunder ..."
+                  sleep 10
+                done
+                cp -an /tmp/wp-content-original/. "$WEBROOT/wp-content/"
+                mkdir -p "$WEBROOT/wp-content/uploads"
+
+                # ---- 5. wp-config.php: losenord och gemensamma nycklar fran Secrets Manager ----
+                SECRET=$(aws secretsmanager get-secret-value --secret-id "$WP_SECRET" \
+                  --query SecretString --output text)
+                SALT=$(aws secretsmanager get-secret-value --secret-id "$SALT_SECRET" \
+                  --query SecretString --output text)
+                $WP config create --dbname="$DB_NAME" \
+                  --dbuser="$(echo "$SECRET" | jq -r .username)" \
+                  --dbpass="$(echo "$SECRET" | jq -r .password)" \
+                  --dbhost="$DB_HOST" --locale=sv_SE --skip-check --skip-salts
+                for KEY in AUTH_KEY SECURE_AUTH_KEY LOGGED_IN_KEY NONCE_KEY \
+                           AUTH_SALT SECURE_AUTH_SALT LOGGED_IN_SALT NONCE_SALT; do
+                  $WP config set "$KEY" "$SALT-$KEY" > /dev/null
+                done
+                unset SECRET SALT
+                $WP config set FS_METHOD direct
+                $WP config set DISALLOW_FILE_EDIT true --raw
+                $WP config set MYSQL_CLIENT_FLAGS MYSQLI_CLIENT_SSL --raw
+                chown -R apache:apache "$WEBROOT"
+                chmod 640 "$WEBROOT/wp-config.php"
+
+                # ---- 6. Backup: bara servern med lagst instans-ID i gruppen kor den ----
+                cat > /etc/novatrix-backup.conf <<CONF
+                DB_HOST=$DB_HOST
+                DB_NAME=$DB_NAME
+                WP_SECRET=$WP_SECRET
+                BACKUP_BUCKET=$BACKUP_BUCKET
+                RDS_CA=$RDS_CA
+                export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
+                CONF
+                chmod 600 /etc/novatrix-backup.conf
+
+                cat > /usr/local/bin/novatrix-backup.sh <<'BACKUP'
+                #!/bin/bash
+                # Backup av WordPress: databasen till db/ och uppladdade filer till uploads/.
+                # Alla servrar i gruppen har jobbet, men bara den med lagst instans-ID kor det.
+                # --force kor backupen oavsett (anvands av backup-now.sh och destroy.sh).
+                set -euo pipefail
+                source /etc/novatrix-backup.conf
+                ME=$(ec2-metadata --instance-id | cut -d' ' -f2)
+                if [ "${!1:-}" != "--force" ]; then
+                  ASG=$(aws autoscaling describe-auto-scaling-instances --instance-ids "$ME" \
+                    --query 'AutoScalingInstances[0].AutoScalingGroupName' --output text)
+                  LEADER=$(aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$ASG" \
+                    --query "AutoScalingGroups[0].Instances[?LifecycleState=='InService'].InstanceId" \
+                    --output text | tr '\t' '\n' | sort | head -n 1)
+                  if [ "$LEADER" != "$ME" ]; then
+                    echo "$(date -u '+%F %T') Ingen backup har: $LEADER ansvarar for backupen"
+                    exit 0
+                  fi
+                fi
+                STAMP=$(date -u +%Y-%m-%dT%H%M%SZ)
+                SECRET=$(aws secretsmanager get-secret-value --secret-id "$WP_SECRET" \
+                  --query SecretString --output text)
+                DB_USER=$(echo "$SECRET" | jq -r .username)
+                MYSQL_PWD=$(echo "$SECRET" | jq -r .password)
+                export MYSQL_PWD
+                DUMP=$(command -v mariadb-dump || command -v mysqldump)
+                "$DUMP" --ssl-ca="$RDS_CA" --ssl-verify-server-cert \
+                  -h "$DB_HOST" -u "$DB_USER" --single-transaction --no-tablespaces "$DB_NAME" \
+                  | gzip | aws s3 cp - "s3://$BACKUP_BUCKET/db/$DB_NAME-$STAMP.sql.gz"
+                tar -czf - -C /var/www/html/wp-content uploads \
+                  | aws s3 cp - "s3://$BACKUP_BUCKET/uploads/uploads-$STAMP.tar.gz"
+                echo "$(date -u '+%F %T') Backup klar fran $ME: db/$DB_NAME-$STAMP.sql.gz och uploads/uploads-$STAMP.tar.gz"
+                BACKUP
+                chmod 750 /usr/local/bin/novatrix-backup.sh
+                echo "0 3 * * * root /usr/local/bin/novatrix-backup.sh >> /var/log/novatrix-backup.log 2>&1" \
+                  > /etc/cron.d/novatrix-backup
+
+                # ---- 7. Installationsloggen till S3 ----
+                aws s3 cp /var/log/cloud-init-output.log "s3://$BACKUP_BUCKET/logs/$INSTANCE_ID-cloud-init.log" || true
+
+                # ---- 8. Halsokontroll och signal till CloudFormation ----
+                # Halsokontrollsidan skapas forst nar allt ar pa plats. Misslyckas installationen
+                # svarar servern 404, lastbalanseraren markerar den som trasig och Auto Scaling
+                # ersatter den automatiskt.
+                if [ -f "$WEBROOT/wp-config.php" ] && [ -f "$WEBROOT/wp-includes/version.php" ] \
+                   && findmnt -n "$WEBROOT/wp-content" > /dev/null; then
+                  echo "OK $INSTANCE_ID" > "$WEBROOT$HEALTH_PATH"
+                  RC=0
+                else
+                  RC=1
+                fi
+                # Signalen vantas bara pa vid skapande och utrullning. Servrar som startas av
+                # skalning fortsatter aven om signalen inte tas emot.
+                /opt/aws/bin/cfn-signal -e $RC --stack "${AWS::StackName}" --resource WebAsg \
+                  --region "${AWS::Region}" || true
+              - EfsId: { "Fn::ImportValue": !Sub "${EnvName}-EfsId" }
+                DbHost: { "Fn::ImportValue": !Sub "${EnvName}-DbEndpoint" }
+                DbName: { "Fn::ImportValue": !Sub "${EnvName}-DbName" }
+                WpSecret: { "Fn::ImportValue": !Sub "${EnvName}-WpDbSecretName" }
+                SaltSecret: { "Fn::ImportValue": !Sub "${EnvName}-WpSaltsSecretName" }
+                BackupBucket: { "Fn::ImportValue": !Sub "${EnvName}-BackupBucketName" }
+
+  # ---------------- Auto Scaling-grupp over tva zoner ----------------
+  WebAsg:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    CreationPolicy:
+      ResourceSignal:
+        Count: !Ref AsgMinSize      # stacken ar klar forst nar alla forsta servrar har signalerat
+        Timeout: PT20M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:     # ny launch template rullas ut en server i taget
+        MinInstancesInService: 1
+        MaxBatchSize: 1
+        PauseTime: PT20M
+        WaitOnResourceSignals: true
+        SuspendProcesses:
+          - HealthCheck
+          - ReplaceUnhealthy
+          - AZRebalance
+          - AlarmNotification
+          - ScheduledActions
+    Properties:
+      AutoScalingGroupName: !Sub "${EnvName}-web-asg"
+      VPCZoneIdentifier:
+        - { "Fn::ImportValue": !Sub "${EnvName}-PublicSubnetAId" }
+        - { "Fn::ImportValue": !Sub "${EnvName}-PublicSubnetBId" }
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WebLaunchTemplate
+        Version: !GetAtt WebLaunchTemplate.LatestVersionNumber
+      MinSize: !Ref AsgMinSize
+      MaxSize: !Ref AsgMaxSize
+      TargetGroupARNs:
+        - !Ref TargetGroup
+      HealthCheckType: ELB          # lastbalanserarens halsokontroll avgor om en server byts ut
+      HealthCheckGracePeriod: 600   # installationen far ta upp till 10 minuter
+      DefaultInstanceWarmup: 300
+      MetricsCollection:
+        - Granularity: 1Minute
+      Tags:
+        - { Key: Name, Value: !Sub "${EnvName}-web", PropagateAtLaunch: true }
+
+  CpuScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref WebAsg
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: !Ref CpuTargetPercent
+
+Outputs:
+  AlbDnsName:
+    Value: !GetAtt LoadBalancer.DNSName
+  WebUrl:
+    Value: !Sub "http://${LoadBalancer.DNSName}"
+  BastionPublicIp:
+    Value: !GetAtt Bastion.PublicIp
+  AsgName:
+    Value: !Ref WebAsg
+  TargetGroupArn:
+    Value: !Ref TargetGroup
+  LaunchTemplateId:
+    Value: !Ref WebLaunchTemplate

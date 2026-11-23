@@ -1,0 +1,96 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Novatrix backup - privat S3-bucket for databas- och filbackuper.
+  Stacken ar langlivad och rivs inte med resten av miljon.
+  Bucketen har DeletionPolicy Retain och finns kvar aven om stacken tas bort.
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: novatrix
+    AllowedPattern: "[a-z][a-z0-9-]*"
+    Description: Miljons namn, anvands som prefix pa alla resurser
+  BackupBucketName:
+    Type: String
+    Description: Globalt unikt namn pa backup-bucketen
+  BackupRetentionDays:
+    Type: Number
+    Default: 14
+    MinValue: 1
+    Description: Antal dagar som backuper av databas och filer sparas
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    Description: Antal dagar som installationsloggar sparas
+
+Resources:
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain          # bucketen och backuperna overlever att stacken tas bort
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref BackupBucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled             # skyddar mot att en backup skrivs over eller raderas av misstag
+      LifecycleConfiguration:
+        Rules:
+          - Id: radera-databasbackuper
+            Status: Enabled
+            Prefix: db/
+            ExpirationInDays: !Ref BackupRetentionDays
+            NoncurrentVersionExpirationInDays: 1
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+          - Id: radera-filbackuper
+            Status: Enabled
+            Prefix: uploads/
+            ExpirationInDays: !Ref BackupRetentionDays
+            NoncurrentVersionExpirationInDays: 1
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+          - Id: radera-loggar
+            Status: Enabled
+            Prefix: logs/
+            ExpirationInDays: !Ref LogRetentionDays
+            NoncurrentVersionExpirationInDays: 1
+      Tags:
+        - Key: Name
+          Value: !Ref BackupBucketName
+
+  BackupBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref BackupBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: KravKrypteradTrafik
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt BackupBucket.Arn
+              - !Sub "${BackupBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+Outputs:
+  BackupBucketName:
+    Value: !Ref BackupBucket
+    Export:
+      Name: !Sub "${EnvName}-BackupBucketName"
+  BackupBucketArn:
+    Value: !GetAtt BackupBucket.Arn
+    Export:
+      Name: !Sub "${EnvName}-BackupBucketArn"
