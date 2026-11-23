@@ -277,7 +277,7 @@ Kostnaden beräknades med AWS Pricing Calculator i två scenarier, som två grup
 
 ![Kalkylen vid normal last](bilder/Price-normal-load.png)
 
-![Kalkylen vid hög last](bilder/price-high-load.png)
+![Kalkylen vid hög last](bilder/Price-high-load.png)
 
 ### Vad som kostar mest
 
