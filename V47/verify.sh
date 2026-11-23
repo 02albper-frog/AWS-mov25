@@ -115,7 +115,7 @@ expect "Det finns en databasbackup"                            ja  "$(yes_if bas
 echo ""
 echo "== WordPress och säkerhet =="
 expect "WordPress är installerat och når databasen"            ja  "$(remote on_web "sudo /usr/local/bin/wp --allow-root --path=/var/www/html core is-installed && echo ok")"
-expect "Alla webbservrar kräver IMDSv2"                        ja  "$(yes_if equals "$(aws ec2 describe-instances --region "$Region" --filters "Name=tag:Name,Values=$EnvName-web" Name=instance-state-name,Values=running --query 'Reservations[].Instances[].MetadataOptions.HttpTokens' --output text | tr '\t' '\n' | sort -u)" required)"
+expect "Alla webbservrar kräver IMDSv2"                        ja  "$(yes_if equals "$(aws ec2 describe-instances --region "$Region" --filters "Name=tag:Name,Values=$EnvName-web" Name=instance-state-name,Values=running --query "length(Reservations[].Instances[?MetadataOptions.HttpTokens!='required'][])" --output text | tr -d '\r')" 0)"
 expect "Bastion når databasen (MySQL 3306)"                    nej "$(remote on_bastion "timeout 5 bash -c 'exec 3<>/dev/tcp/$DB_HOST/3306' && echo ok")"
 expect "Webbservern kan läsa databasens huvudlösenord"         nej "$(remote on_web "aws secretsmanager get-secret-value --region $Region --secret-id $EnvName/db/master > /dev/null && echo ok")"
 expect "Webbservern kan läsa backuperna"                       nej "$(remote on_web "aws s3 ls s3://$B/db/ --region $Region > /dev/null && echo ok")"
