@@ -174,7 +174,7 @@ Resources:
 
                 # ---- 2. Apache: visa vilken server som svarar, stang installationssidan ----
                 cat > /etc/httpd/conf.d/novatrix.conf <<CONF
-                Header always set X-Novatrix-Instance "2"
+                Header always set X-Novatrix-Version "2"
                 <Location "/wp-admin/install.php">
                     Require all denied
                 </Location>
