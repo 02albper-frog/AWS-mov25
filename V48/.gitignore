@@ -1,0 +1,2 @@
+# Personliga värden (t.ex. e-postadressen för larmen) ska inte till GitHub
+parameters/*.local.env

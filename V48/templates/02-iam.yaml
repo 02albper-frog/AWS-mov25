@@ -1,0 +1,232 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Novatrix IAM (v48) - webbserverns roll, grupper och anvandare enligt least privilege.
+  Webbrollen far CloudWatchAgentServerPolicy for agentens matvarden och loggar.
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: novatrix
+    AllowedPattern: "[a-z][a-z0-9-]*"
+
+Resources:
+  # ---------------- Webbserverns roll ----------------
+  WebRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${EnvName}-web-ec2-role"
+      Description: "Novatrix webbservrar: backuper, eget databaslosenord, se gruppen, CloudWatch-agenten"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EndastEC2FarAnvandaRollen
+            Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref WebRolePolicy
+        # AWS-hanterad policy for CloudWatch-agenten: skicka matvarden och loggar, lasa
+        # taggar (for gruppens namn) och lasa parametrar som heter AmazonCloudWatch-*
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/CloudWatchAgentServerPolicy"
+
+  WebRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${EnvName}-web-ec2-policy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: LaggTillBackuperOchLoggar
+            Effect: Allow
+            Action: s3:PutObject
+            Resource:
+              - !Sub
+                - "arn:aws:s3:::${Bucket}/db/*"
+                - Bucket: { "Fn::ImportValue": !Sub "${EnvName}-BackupBucketName" }
+              - !Sub
+                - "arn:aws:s3:::${Bucket}/uploads/*"
+                - Bucket: { "Fn::ImportValue": !Sub "${EnvName}-BackupBucketName" }
+              - !Sub
+                - "arn:aws:s3:::${Bucket}/logs/*"
+                - Bucket: { "Fn::ImportValue": !Sub "${EnvName}-BackupBucketName" }
+          - Sid: SeServrarnaIGruppen
+            Effect: Allow
+            Action:
+              - autoscaling:DescribeAutoScalingInstances
+              - autoscaling:DescribeAutoScalingGroups
+            Resource: "*"           # Describe-anrop stodjer inte begransning per resurs
+          - Sid: LasEndastWordPressHemligheterna
+            Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource:
+              - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${EnvName}/db/wordpress-??????"
+              - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${EnvName}/wp/salts-??????"
+
+  WebInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${EnvName}-web-ec2-profile"
+      Roles:
+        - !Ref WebRole
+
+  # ---------------- Utveckling: foreslar andringar ----------------
+  UtvecklingPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${EnvName}-utveckling-policy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: LasaStackarnaOchForeslaAndringar
+            Effect: Allow
+            Action:
+              - cloudformation:Describe*
+              - cloudformation:List*
+              - cloudformation:GetTemplate
+              - cloudformation:GetTemplateSummary
+              - cloudformation:CreateChangeSet
+              - cloudformation:DeleteChangeSet
+            Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${EnvName}-*/*"
+          - Sid: ValideraTemplates
+            Effect: Allow
+            Action: cloudformation:ValidateTemplate
+            Resource: "*"
+
+  # ---------------- Drift: genomfor andringar och aterstaller ----------------
+  DriftPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${EnvName}-drift-policy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: HanteraStackarna
+            Effect: Allow
+            Action:
+              - cloudformation:Describe*
+              - cloudformation:List*
+              - cloudformation:GetTemplate
+              - cloudformation:CreateChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:DeleteChangeSet
+            Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${EnvName}-*/*"
+          - Sid: LasaMiljonEndastStockholm
+            Effect: Allow
+            Action:
+              - ec2:Describe*
+              - rds:Describe*
+              - elasticfilesystem:Describe*
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: !Ref AWS::Region
+          - Sid: StartaServrarEndastStockholm
+            Effect: Allow
+            Action: ec2:RunInstances
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: !Ref AWS::Region
+          - Sid: TaggaEndastVidStart
+            Effect: Allow
+            Action: ec2:CreateTags
+            Resource: "*"
+            Condition:
+              StringEquals:
+                ec2:CreateAction: RunInstances
+          - Sid: HanteraEndastNovatrixServrar
+            Effect: Allow
+            Action:
+              - ec2:StartInstances
+              - ec2:StopInstances
+              - ec2:TerminateInstances
+            Resource: "*"
+            Condition:
+              StringEquals:
+                ec2:ResourceTag/Name:
+                  - !Sub "${EnvName}-web"
+                  - !Sub "${EnvName}-bastion"
+          - Sid: SeLastbalanserareOchGrupper
+            Effect: Allow
+            Action:
+              - autoscaling:Describe*
+              - elasticloadbalancing:Describe*
+            Resource: "*"
+          - Sid: HanteraEndastNovatrixGruppen
+            Effect: Allow
+            Action:
+              - autoscaling:SetDesiredCapacity
+              - autoscaling:TerminateInstanceInAutoScalingGroup
+              - autoscaling:StartInstanceRefresh
+            Resource: "*"
+            Condition:
+              StringEquals:
+                autoscaling:ResourceTag/Name: !Sub "${EnvName}-web"
+          - Sid: LasaOvervakningen
+            Effect: Allow
+            Action:
+              - cloudwatch:Describe*
+              - cloudwatch:Get*
+              - cloudwatch:List*
+              - logs:Describe*
+              - logs:Get*
+              - logs:FilterLogEvents
+              - logs:StartQuery
+              - logs:StopQuery
+            Resource: "*"
+          - Sid: LamnaOverEndastWebbrollenTillEC2
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: !GetAtt WebRole.Arn
+            Condition:
+              StringEquals:
+                iam:PassedToService: ec2.amazonaws.com
+          - Sid: LasaBackuperForAterstallning
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+              - s3:GetObject
+            Resource:
+              - { "Fn::ImportValue": !Sub "${EnvName}-BackupBucketArn" }
+              - !Sub
+                - "${Arn}/*"
+                - Arn: { "Fn::ImportValue": !Sub "${EnvName}-BackupBucketArn" }
+
+  UtvecklingGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: !Sub "${EnvName}-utveckling"
+      ManagedPolicyArns:
+        - !Ref UtvecklingPolicy
+
+  DriftGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: !Sub "${EnvName}-drift"
+      ManagedPolicyArns:
+        - !Ref DriftPolicy
+
+  AnnaDev:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub "${EnvName}-anna-dev"
+      Groups:
+        - !Ref UtvecklingGroup
+
+  ErikDrift:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub "${EnvName}-erik-drift"
+      Groups:
+        - !Ref DriftGroup
+
+Outputs:
+  WebInstanceProfileName:
+    Value: !Ref WebInstanceProfile
+    Export:
+      Name: !Sub "${EnvName}-WebInstanceProfileName"
+  WebRoleArn:
+    Value: !GetAtt WebRole.Arn
+    Export:
+      Name: !Sub "${EnvName}-WebRoleArn"
