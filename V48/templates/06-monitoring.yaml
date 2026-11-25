@@ -18,10 +18,13 @@ Parameters:
     Type: Number
     Default: 70
     Description: Larm nar gruppens genomsnittliga CPU ar over detta i 5 minuter
-  MemoryAlarmPercent:
+  MemoryAvailableAlarmPercent:
     Type: Number
-    Default: 85
-    Description: Larm nar minnet pa den mest belastade servern ar over detta
+    Default: 10
+    Description: >-
+      Larm nar tillgangligt minne pa den mest belastade servern ar under detta.
+      mem_used_percent raknar cache som ledigt; pa en t3.micro tar minnet slut (OOM)
+      innan det nar 85 %, sa larmet bygger pa det Linux sjalv bedomer som tillgangligt.
   DiskAlarmPercent:
     Type: Number
     Default: 85
@@ -75,17 +78,17 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub "${EnvName}-minne"
-      AlarmDescription: Minnet ar nastan slut pa minst en webbserver (fran CloudWatch-agenten)
+      AlarmDescription: Mindre an 10 % tillgangligt minne pa minst en webbserver (fran CloudWatch-agenten)
       Namespace: CWAgent
-      MetricName: mem_used_percent
+      MetricName: mem_available_percent
       Dimensions:
         - Name: AutoScalingGroupName
           Value: { "Fn::ImportValue": !Sub "${EnvName}-AsgName" }
-      Statistic: Maximum
+      Statistic: Minimum              # den server som har minst minne kvar
       Period: 300
       EvaluationPeriods: 1
-      ComparisonOperator: GreaterThanThreshold
-      Threshold: !Ref MemoryAlarmPercent
+      ComparisonOperator: LessThanThreshold
+      Threshold: !Ref MemoryAvailableAlarmPercent
       TreatMissingData: missing
       AlarmActions: [!Ref AlarmTopic]
       OKActions: [!Ref AlarmTopic]
@@ -417,11 +420,12 @@ Resources:
               {
                 "type": "metric", "x": 8, "y": 3, "width": 8, "height": 6,
                 "properties": {
-                  "title": "Minne och disk, hogsta servern (%)", "region": "${AWS::Region}",
+                  "title": "Minne och disk, samsta servern (%)", "region": "${AWS::Region}",
                   "view": "timeSeries", "stat": "Maximum", "period": 60,
                   "metrics": [
-                    ["CWAgent", "mem_used_percent", "AutoScalingGroupName", "${Asg}", {"label": "Minne"}],
-                    ["CWAgent", "disk_used_percent", "AutoScalingGroupName", "${Asg}", {"label": "Disk /"}]
+                    ["CWAgent", "mem_available_percent", "AutoScalingGroupName", "${Asg}", {"label": "Minne tillgangligt (larm under ${MemoryAvailableAlarmPercent})", "stat": "Minimum"}],
+                    ["CWAgent", "mem_used_percent", "AutoScalingGroupName", "${Asg}", {"label": "Minne anvant"}],
+                    ["CWAgent", "disk_used_percent", "AutoScalingGroupName", "${Asg}", {"label": "Disk / anvant"}]
                   ],
                   "yAxis": {"left": {"min": 0, "max": 100}}
                 }

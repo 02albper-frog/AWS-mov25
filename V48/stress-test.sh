@@ -3,7 +3,7 @@
 #
 # Användning: ./stress-test.sh larmtest [larm] [miljö]    sätter ett larm i ALARM för att testa
 #                                                         kedjan, t.ex. larmtest cpu-hog (standard)
-#             ./stress-test.sh minne [minuter] [miljö]   fyller minnet på en server (ca 93 %)
+#             ./stress-test.sh minne [minuter] [miljö]   fyller minnet tills ca 8 % är tillgängligt
 #             ./stress-test.sh disk [minuter] [miljö]    fyller disken / på en server (ca 90 %)
 #             ./stress-test.sh unhealthy [minuter] [miljö]  en server svarar 404 på hälsokontrollen
 #             ./stress-test.sh stopp [miljö]             avbryter alla tester och återställer
@@ -53,13 +53,22 @@ case "$ACTION" in
     first_web
     echo "Fyller minnet på $ID ($IP) i $MINUTES minuter ..."
     on_host "$IP" "sudo bash -s" <<SKRIPT
-BYTES=\$(awk '/MemTotal/{t=\$2} /MemAvailable/{a=\$2} END{print int((a - t*0.07)*1024)}' /proc/meminfo)
-setsid nohup timeout ${MINUTES}m python3 -c "import time; x = b'\\x01' * \$BYTES; time.sleep(100000)" \
-  < /dev/null > /dev/null 2>&1 &
-sleep 5
-free -m | awk 'NR==2{printf "Minne använt: %d av %d MB (%.0f %%)\n", \$3, \$2, \$3*100/\$2}'
+# Fyller minnet 16 MB i taget tills bara 8 % är tillgängligt (MemAvailable), och håller det.
+# Larmet novatrix-minne går när mem_available_percent är under 10 %.
+setsid nohup timeout ${MINUTES}m python3 -c '
+import time
+def available_percent():
+    m = {k: int(v.split()[0]) for k, v in (l.split(":", 1) for l in open("/proc/meminfo"))}
+    return m["MemAvailable"] * 100 / m["MemTotal"]
+chunks = []
+while available_percent() > 8 and len(chunks) < 400:
+    chunks.append(b"\x01" * 16 * 1024 * 1024)
+time.sleep(100000)
+' < /dev/null > /dev/null 2>&1 &
+sleep 20
+free -m | awk 'NR==2{printf "Tillgängligt minne: %d av %d MB (%.0f %%)\n", \$7, \$2, \$7*100/\$2}'
 SKRIPT
-    echo "Larmet $EnvName-minne går när en hel 5-minutersperiod ligger över gränsen (5-10 min)."
+    echo "Larmet $EnvName-minne går när tillgängligt minne har legat under 10 % i en 5-minutersperiod (5-10 min)."
     ;;
 
   disk)
@@ -93,7 +102,7 @@ SKRIPT
     while read -r ID IP _; do
       on_host "$IP" "sudo pkill -f 'time.sleep.100000'; sudo rm -f /var/tmp/novatrix-disktest; \
         [ -f /var/www/html/health.html.av ] && sudo mv -n /var/www/html/health.html.av /var/www/html/health.html; true" \
-        > /dev/null 2>&1
+        < /dev/null > /dev/null 2>&1
       echo "Återställde $ID"
     done < <(web_instances)
     aws autoscaling resume-processes --region "$Region" --auto-scaling-group-name "$ASG" \

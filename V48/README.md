@@ -39,7 +39,7 @@ cd V48
 ./verify.sh                       # alla tester, inklusive övervakningen
 ./stress-test.sh larmtest         # testar larmkedjan larm -> SNS -> e-post
 ./load-test.sh start              # CPU-larmet och skalningen
-./stress-test.sh minne            # minneslarmet
+./stress-test.sh minne            # minneslarmet (tillgängligt minne under 10 %)
 ./stress-test.sh disk             # disklarmet
 ./stress-test.sh unhealthy        # larmet för sjuka servrar
 ./stress-test.sh stopp            # återställer efter testerna

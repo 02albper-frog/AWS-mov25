@@ -169,7 +169,7 @@ Resources:
             "aggregation_dimensions": [["AutoScalingGroupName"]],
             "metrics_collected": {
               "mem": {
-                "measurement": ["mem_used_percent"]
+                "measurement": ["mem_used_percent", "mem_available_percent"]
               },
               "disk": {
                 "measurement": ["used_percent"],
