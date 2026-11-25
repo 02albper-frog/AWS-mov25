@@ -41,7 +41,7 @@ case "$ACTION" in
   start)
     echo "Belastar alla webbservrar i $MINUTES minuter:"
     while read -r ID IP _; do
-      on_host "$IP" "sudo nohup timeout ${MINUTES}m bash -c 'for i in \$(seq \$(nproc)); do yes > /dev/null & done; wait' > /dev/null 2>&1 &"
+      on_host "$IP" "sudo nohup timeout ${MINUTES}m bash -c 'for i in \$(seq \$(nproc)); do yes > /dev/null & done; wait' > /dev/null 2>&1 &" < /dev/null
       echo "  $ID ($IP)"
     done < <(web_instances)
     echo ""
@@ -55,7 +55,7 @@ case "$ACTION" in
     ;;
   stop)
     while read -r ID IP _; do
-      on_host "$IP" "sudo pkill -x yes; sudo pkill -f 'timeout .*yes'" > /dev/null 2>&1
+      on_host "$IP" "sudo pkill -x yes; sudo pkill -f 'timeout .*yes'" < /dev/null > /dev/null 2>&1
       echo "Stoppade belastningen på $ID"
     done < <(web_instances)
     ;;
